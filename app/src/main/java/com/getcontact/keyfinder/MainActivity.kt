@@ -1,12 +1,10 @@
 package com.getcontact.keyfinder
 
 import android.os.Bundle
-import android.os.Environment
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import java.io.BufferedReader
-import java.io.File
 import java.io.InputStreamReader
 
 class MainActivity : AppCompatActivity() {
@@ -23,7 +21,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
         initViews()
         showInstructions()
     }
@@ -38,17 +35,13 @@ class MainActivity : AppCompatActivity() {
         progressBar = findViewById(R.id.progressBar)
         tvInstructions = findViewById(R.id.tvInstructions)
 
-        btnSearch.setOnClickListener {
-            searchForKeys()
-        }
-
+        btnSearch.setOnClickListener { searchForKeys() }
         btnCopyToken.setOnClickListener {
             val token = tvToken.text.toString()
             if (token.isNotEmpty() && token != "Не найден" && token != "...") {
                 copyToClipboard("TOKEN", token)
             }
         }
-
         btnCopyKey.setOnClickListener {
             val key = tvFinalKey.text.toString()
             if (key.isNotEmpty() && key != "Не найден" && key != "...") {
@@ -60,27 +53,10 @@ class MainActivity : AppCompatActivity() {
     private fun showInstructions() {
         tvStatus.text = "Готов к поиску"
         tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_blue_dark))
-
         tvInstructions.text = """
-            Как получить ключи GetContact:
+            Нажмите "Поиск ключей" для поиска TOKEN и FINAL_KEY.
             
-            Способ 1: Через ADB (рекомендуется)
-            1. Включите "Отладка USB" на телефоне
-            2. Подключите телефон к компьютеру
-            3. В терминале выполните:
-               adb pull /data/data/app.source.getcontact/shared_prefs/GetContactSettingsPref.xml
-            4. Откройте скачанный файл и найдите TOKEN и FINAL_KEY
-            
-            Способ 2: ROOT (если есть)
-            1. Нажмите "Поиск ключей"
-            2. Приложение запросит ROOT-доступ
-            3. Разрешите и ключи найдутся автоматически
-            
-            Способ 3: Эмулятор
-            1. Установите Android Studio
-            2. Создайте виртуальное устройство
-            3. Установите GetContact и войдите в аккаунт
-            4. Используйте ADB для извлечения ключей
+            Работает только на устройствах с ROOT.
         """.trimIndent()
     }
 
@@ -89,6 +65,7 @@ class MainActivity : AppCompatActivity() {
         tvStatus.text = "Поиск ключей..."
         tvToken.text = "..."
         tvFinalKey.text = "..."
+        tvInstructions.text = ""
 
         Thread {
             val result = findGetContactKeys()
@@ -99,145 +76,184 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    private fun execSu(command: String): String {
+        val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
+        val reader = BufferedReader(InputStreamReader(process.inputStream))
+        val content = reader.readText()
+        process.waitFor()
+        return content
+    }
+
     private fun findGetContactKeys(): Map<String, String?> {
         val result = mutableMapOf<String, String?>()
         result["token"] = null
         result["finalKey"] = null
         result["found"] = "false"
         result["path"] = ""
+        result["raw"] = ""
 
-        // Попытка через ROOT (su command)
-        try {
-            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /data/data/app.source.getcontact/shared_prefs/GetContactSettingsPref.xml"))
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            val errorReader = BufferedReader(InputStreamReader(process.errorStream))
-            
-            val content = reader.readText()
-            val error = errorReader.readText()
-            process.waitFor()
-
-            if (content.isNotEmpty() && !content.contains("Permission denied")) {
-                val token = extractValue(content, "TOKEN")
-                val finalKey = extractValue(content, "FINAL_KEY")
-                val chatToken = extractValue(content, "CHAT_TOKEN")
-
-                result["token"] = token ?: chatToken
-                result["finalKey"] = finalKey
-                result["found"] = "true"
-                result["path"] = "ROOT: /data/data/app.source.getcontact/shared_prefs/"
-                return result
-            }
-        } catch (e: Exception) {
-            // ROOT недоступен или не установлен
-        }
-
-        // Попытка прямого доступа (только если приложение имеет права)
-        val possiblePaths = listOf(
-            "/data/data/app.source.getcontact/shared_prefs/GetContactSettingsPref.xml",
-            "/data/user/0/app.source.getcontact/shared_prefs/GetContactSettingsPref.xml",
-            "/data/data/com.getcontact.android/shared_prefs/GetContactSettingsPref.xml",
-            "/data/user/0/com.getcontact.android/shared_prefs/GetContactSettingsPref.xml"
+        // Все варианты имён пакетов
+        val packages = listOf(
+            "app.source.getcontact",
+            "com.getcontact.android",
+            "com.getcontact"
         )
 
-        for (path in possiblePaths) {
-            try {
-                val file = File(path)
-                if (file.exists() && file.canRead()) {
-                    val content = file.readText()
-                    val token = extractValue(content, "TOKEN")
-                    val finalKey = extractValue(content, "FINAL_KEY")
-                    val chatToken = extractValue(content, "CHAT_TOKEN")
+        // Все варианты имён файлов
+        val prefFiles = listOf(
+            "GetContactSettingsPref.xml",
+            "settings.xml",
+            "prefs.xml",
+            "config.xml"
+        )
 
-                    if (token != null || finalKey != null) {
-                        result["token"] = token ?: chatToken
-                        result["finalKey"] = finalKey
-                        result["found"] = "true"
+        for (pkg in packages) {
+            for (prefFile in prefFiles) {
+                try {
+                    val path = "/data/data/$pkg/shared_prefs/$prefFile"
+                    val content = execSu("cat $path 2>/dev/null")
+
+                    if (content.isNotEmpty() && !content.contains("No such file") && !content.contains("Permission denied")) {
+                        result["raw"] = content
                         result["path"] = path
-                        return result
+
+                        // Пробуем найти ключи разными способами
+                        val keys = parseKeys(content)
+                        if (keys["token"] != null || keys["finalKey"] != null) {
+                            result["token"] = keys["token"]
+                            result["finalKey"] = keys["finalKey"]
+                            result["found"] = "true"
+                            return result
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+
+        // Также пробуем найти через ls все XML файлы
+        try {
+            for (pkg in packages) {
+                val lsOutput = execSu("ls /data/data/$pkg/shared_prefs/ 2>/dev/null")
+                if (lsOutput.isNotEmpty() && !lsOutput.contains("No such file")) {
+                    val files = lsOutput.lines().filter { it.endsWith(".xml") }
+                    for (file in files) {
+                        try {
+                            val path = "/data/data/$pkg/shared_prefs/$file"
+                            val content = execSu("cat $path 2>/dev/null")
+                            if (content.isNotEmpty()) {
+                                val keys = parseKeys(content)
+                                if (keys["token"] != null || keys["finalKey"] != null) {
+                                    result["token"] = keys["token"]
+                                    result["finalKey"] = keys["finalKey"]
+                                    result["found"] = "true"
+                                    result["path"] = path
+                                    result["raw"] = content
+                                    return result
+                                }
+                                // Если нашли хотя бы какой-то файл, сохраняем
+                                if (result["raw"].isNullOrEmpty()) {
+                                    result["raw"] = content
+                                    result["path"] = path
+                                }
+                            }
+                        } catch (_: Exception) {}
                     }
                 }
-            } catch (e: Exception) {
-                // Пропускаем этот путь
+            }
+        } catch (_: Exception) {}
+
+        return result
+    }
+
+    private fun parseKeys(xmlContent: String): Map<String, String?> {
+        val result = mutableMapOf<String, String?>()
+        result["token"] = null
+        result["finalKey"] = null
+
+        // Android SharedPreferences XML format:
+        // <map>
+        //   <string name="TOKEN">value</string>
+        //   <string name="FINAL_KEY">value</string>
+        // </map>
+
+        val keysToFind = mapOf(
+            "token" to listOf("TOKEN", "CHAT_TOKEN", "token", "chat_token"),
+            "finalKey" to listOf("FINAL_KEY", "final_key", "finalKey")
+        )
+
+        for ((resultKey, names) in keysToFind) {
+            for (name in names) {
+                // Pattern 1: <string name="KEY">VALUE</string>
+                var regex = Regex("""<string\s+name="$name">(.*?)</string>""", RegexOption.DOT_MATCHES_ALL)
+                var match = regex.find(xmlContent)
+                if (match != null && match.groupValues[1].isNotEmpty()) {
+                    result[resultKey] = match.groupValues[1]
+                    break
+                }
+
+                // Pattern 2: <string name="KEY" value="VALUE"/>
+                regex = Regex("""<string\s+name="$name"\s+value="(.*?)"/>""")
+                match = regex.find(xmlContent)
+                if (match != null && match.groupValues[1].isNotEmpty()) {
+                    result[resultKey] = match.groupValues[1]
+                    break
+                }
+
+                // Pattern 3: name="KEY" value="VALUE"
+                regex = Regex("""name="$name"[^>]*value="(.*?)"|value="(.*?)"[^>]*name="$name"""")
+                match = regex.find(xmlContent)
+                if (match != null) {
+                    val value = match.groupValues[1].ifEmpty { match.groupValues[2] }
+                    if (value.isNotEmpty()) {
+                        result[resultKey] = value
+                        break
+                    }
+                }
+
+                // Pattern 4: Any JSON-like format
+                regex = Regex("""["$](?:name[\":\\s]*[\":]|)$name[\":\\s]*[\":]\\s*[\":](.*?)[\",]""")
+                match = regex.find(xmlContent)
+                if (match != null && match.groupValues[1].isNotEmpty()) {
+                    result[resultKey] = match.groupValues[1]
+                    break
+                }
             }
         }
 
         return result
     }
 
-    private fun extractValue(xmlContent: String, key: String): String? {
-        val patterns = listOf(
-            """name="$key"[^>]*>([^<]+)<""",
-            """name="$key"\s+value="([^"]+)"""",
-            """\"$key\"\s*:\s*\"([^\"]+)\""""
-        )
-
-        for (pattern in patterns) {
-            val regex = Regex(pattern)
-            val match = regex.find(xmlContent)
-            if (match != null) {
-                return match.groupValues[1]
-            }
-        }
-        return null
-    }
-
     private fun displayResults(result: Map<String, String?>) {
         if (result["found"] == "true") {
             tvStatus.text = "Ключи найдены!"
             tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
-
             tvToken.text = result["token"] ?: "Не найден"
             tvFinalKey.text = result["finalKey"] ?: "Не найден"
+            Toast.makeText(this, "Файл: ${result["path"]}", Toast.LENGTH_LONG).show()
+        } else if (result["raw"].isNotEmpty()) {
+            // Файл найден, но ключи не распознаны — покажем raw
+            tvStatus.text = "Файл найден, но ключи не распознаны"
+            tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_orange_dark))
+            tvToken.text = "см. инструкции"
+            tvFinalKey.text = "см. инструкции"
 
-            Toast.makeText(this, "Источник: ${result["path"]}", Toast.LENGTH_LONG).show()
+            // Показываем содержимое файла для ручного поиска
+            val raw = result["raw"] ?: ""
+            val truncated = if (raw.length > 1500) raw.substring(0, 1500) + "..." else raw
+            tvInstructions.text = """
+                Файл: ${result["path"]}
+                
+                Содержимое (ищите TOKEN и FINAL_KEY):
+                
+                $truncated
+            """.trimIndent()
         } else {
-            tvStatus.text = "Ключи не найдены (нужен ROOT или ADB)"
+            tvStatus.text = "Ключи не найдены"
             tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_dark))
             tvToken.text = "Не найден"
             tvFinalKey.text = "Не найден"
-
-            showNoRootDialog()
+            tvInstructions.text = "Убедитесь что GetContact установлен и ROOT доступен"
         }
-    }
-
-    private fun showNoRootDialog() {
-        val dialog = android.app.AlertDialog.Builder(this)
-            .setTitle("ROOT не найден")
-            .setMessage("""
-                Без ROOT приложение не может прочитать файлы GetContact.
-                
-                Используйте ADB:
-                
-                1. Включите "Отладка USB" в настройках разработчика
-                2. Подключите телефон к компьютеру
-                3. Выполните команду:
-                
-                adb pull /data/data/app.source.getcontact/shared_prefs/GetContactSettingsPref.xml
-                
-                4. Откройте файл и найдите значения TOKEN и FINAL_KEY
-            """.trimIndent())
-            .setPositiveButton("Понятно", null)
-            .setNeutralButton("Как включить отладку USB?") { _, _ ->
-                showUsbDebugInstructions()
-            }
-            .create()
-        dialog.show()
-    }
-
-    private fun showUsbDebugInstructions() {
-        val dialog = android.app.AlertDialog.Builder(this)
-            .setTitle("Включение отладки USB")
-            .setMessage("""
-                1. Откройте "Настройки"
-                2. Перейдите в "О телефоне"
-                3. Нажмите 7 раз на "Номер сборки" (Build Number)
-                4. Вернитесь в "Настройки"
-                5. Откройте "Для разработчиков"
-                6. Включите "Отладка USB"
-            """.trimIndent())
-            .setPositiveButton("OK", null)
-            .create()
-        dialog.show()
     }
 
     private fun copyToClipboard(label: String, text: String) {
