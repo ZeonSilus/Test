@@ -11,4 +11,5 @@
     <color name="card_bg">#FF16213E</color>
     <color name="accent">#FFE94560</color>
     <color name="input_bg">#FF0F3460</color>
+    <color name="ic_launcher_background">#FF1A1A2E</color>
 </resources>
