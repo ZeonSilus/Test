@@ -185,25 +185,25 @@ class MainActivity : AppCompatActivity() {
             for (name in names) {
                 // Pattern 1: <string name="KEY">VALUE</string>
                 var regex = Regex("""<string\s+name="$name">(.*?)</string>""", RegexOption.DOT_MATCHES_ALL)
-                var match = regex.find(xmlContent)
-                if (match != null && match.groupValues[1].isNotEmpty()) {
-                    result[resultKey] = match.groupValues[1]
+                var matchResult = regex.find(xmlContent)
+                if (matchResult != null && matchResult.groupValues[1].isNotEmpty()) {
+                    result[resultKey] = matchResult.groupValues[1]
                     break
                 }
 
                 // Pattern 2: <string name="KEY" value="VALUE"/>
                 regex = Regex("""<string\s+name="$name"\s+value="(.*?)"/>""")
-                match = regex.find(xmlContent)
-                if (match != null && match.groupValues[1].isNotEmpty()) {
-                    result[resultKey] = match.groupValues[1]
+                matchResult = regex.find(xmlContent)
+                if (matchResult != null && matchResult.groupValues[1].isNotEmpty()) {
+                    result[resultKey] = matchResult.groupValues[1]
                     break
                 }
 
                 // Pattern 3: name="KEY" value="VALUE"
                 regex = Regex("""name="$name"[^>]*value="(.*?)"|value="(.*?)"[^>]*name="$name"""")
-                match = regex.find(xmlContent)
-                if (match != null) {
-                    val value = match.groupValues[1].ifEmpty { match.groupValues[2] }
+                val m3 = regex.find(xmlContent)
+                if (m3 != null) {
+                    val value = if (m3.groupValues[1].isNotEmpty()) m3.groupValues[1] else m3.groupValues[2]
                     if (value.isNotEmpty()) {
                         result[resultKey] = value
                         break
@@ -211,11 +211,14 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 // Pattern 4: Any JSON-like format
-                regex = Regex("""["$](?:name[\":\\s]*[\":]|)$name[\":\\s]*[\":]\\s*[\":](.*?)[\",]""")
-                match = regex.find(xmlContent)
-                if (match != null && match.groupValues[1].isNotEmpty()) {
-                    result[resultKey] = match.groupValues[1]
-                    break
+                regex = Regex("""name="$name"[^"]*"[^"]*?"(.*?)"|"(.*?)"[^"]*name="$name"""")
+                val m4 = regex.find(xmlContent)
+                if (m4 != null) {
+                    val value = if (m4.groupValues[1].isNotEmpty()) m4.groupValues[1] else m4.groupValues[2]
+                    if (value.isNotEmpty()) {
+                        result[resultKey] = value
+                        break
+                    }
                 }
             }
         }
@@ -230,7 +233,7 @@ class MainActivity : AppCompatActivity() {
             tvToken.text = result["token"] ?: "Не найден"
             tvFinalKey.text = result["finalKey"] ?: "Не найден"
             Toast.makeText(this, "Файл: ${result["path"]}", Toast.LENGTH_LONG).show()
-        } else if (result["raw"].isNotEmpty()) {
+        } else if (!(result["raw"]).isNullOrEmpty()) {
             // Файл найден, но ключи не распознаны — покажем raw
             tvStatus.text = "Файл найден, но ключи не распознаны"
             tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_orange_dark))
