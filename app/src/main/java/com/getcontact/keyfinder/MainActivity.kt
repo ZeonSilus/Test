@@ -217,7 +217,7 @@ class MainActivity : AppCompatActivity() {
                 4. Откройте файл и найдите значения TOKEN и FINAL_KEY
             """.trimIndent())
             .setPositiveButton("Понятно", null)
-            .setNeutraliative("Как включить отладку USB?") { _, _ ->
+            .setNeutralButton("Как включить отладку USB?") { _, _ ->
                 showUsbDebugInstructions()
             }
             .create()
