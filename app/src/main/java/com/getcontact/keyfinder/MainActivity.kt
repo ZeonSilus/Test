@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 
@@ -46,7 +47,7 @@ class MainActivity : AppCompatActivity() {
         }
         btnCopyKey.setOnClickListener {
             val v = tvFinalKey.text.toString()
-            if (v.isNotEmpty() && v != "..." && v != "Не найден") copy("FINAL_KEY", v)
+            if (v.isNotEmpty() && v != "..." && v != "Не найден") copy("FINAL_KEY/UID", v)
         }
     }
 
@@ -58,10 +59,11 @@ class MainActivity : AppCompatActivity() {
         tvInstructions.text = ""
 
         Thread {
-            val allFiles = mutableMapOf<String, String>()
             val packages = listOf("app.source.getcontact", "com.getcontact.android", "com.getcontact")
+            var xmlContent = ""
+            var foundPath = ""
 
-            // Читаем ВСЕ XML файлы из shared_prefs ВСЕХ пакетов
+            // Ищем XML с BASIC_INIT_PARAMS_KEY
             for (pkg in packages) {
                 try {
                     val ls = execSu("ls /data/data/$pkg/shared_prefs/ 2>/dev/null")
@@ -72,112 +74,91 @@ class MainActivity : AppCompatActivity() {
                         try {
                             val path = "/data/data/$pkg/shared_prefs/$file"
                             val content = execSu("cat $path 2>/dev/null")
-                            if (content.isNotBlank() && !content.contains("Permission denied")) {
-                                allFiles["$pkg/$file"] = content
+                            if (content.contains("BASIC_INIT_PARAMS_KEY")) {
+                                xmlContent = content
+                                foundPath = "$pkg/$file"
+                                break
                             }
                         } catch (_: Exception) {}
                     }
+                    if (xmlContent.isNotEmpty()) break
                 } catch (_: Exception) {}
             }
 
             runOnUiThread {
                 progressBar.visibility = android.view.View.GONE
-                if (allFiles.isEmpty()) {
-                    tvStatus.text = "Файлы не найдены"
+                if (xmlContent.isEmpty()) {
+                    tvStatus.text = "GetContact не найден"
                     tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_dark))
-                    tvInstructions.text = "Убедитесь что GetContact установлен и ROOT доступен"
+                    tvInstructions.text = "Установите GetContact и войдите в аккаунт"
                 } else {
-                    displayAllFiles(allFiles)
+                    parseAndDisplay(xmlContent, foundPath)
                 }
             }
         }.start()
     }
 
-    private fun displayAllFiles(files: Map<String, String>) {
-        // Ищем ключи во всех файлах
-        var foundToken: String? = null
-        var foundKey: String? = null
-        var foundFile = ""
-
-        // Все возможные имена для TOKEN
-        val tokenNames = listOf(
-            "TOKEN", "CHAT_TOKEN", "token", "chat_token",
-            "auth_token", "access_token", "session_token",
-            "TOKEN_KEY", "api_token", "user_token"
-        )
-        // Все возможные имена для FINAL_KEY
-        val keyNames = listOf(
-            "FINAL_KEY", "final_key", "finalKey",
-            "FINAL_KEY_ID", "encryption_key", "secret_key",
-            "KEY_FINAL", "private_key", "aes_key"
-        )
-
-        for ((fileName, content) in files) {
-            // Ищем TOKEN
-            if (foundToken == null) {
-                for (name in tokenNames) {
-                    val value = extractXmlString(content, name)
-                    if (value != null && value.length > 5) {
-                        foundToken = value
-                        foundFile = fileName
-                        break
-                    }
-                }
+    private fun parseAndDisplay(xml: String, path: String) {
+        try {
+            // Извлекаем JSON из BASIC_INIT_PARAMS_KEY
+            val jsonMatch = Regex("""<string name="BASIC_INIT_PARAMS_KEY">(.*?)</string>""").find(xml)
+            if (jsonMatch == null) {
+                tvStatus.text = "BASIC_INIT_PARAMS_KEY не найден"
+                tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_orange_dark))
+                return
             }
-            // Ищем FINAL_KEY
-            if (foundKey == null) {
-                for (name in keyNames) {
-                    val value = extractXmlString(content, name)
-                    if (value != null && value.length > 3) {
-                        foundKey = value
-                        if (foundFile.isEmpty()) foundFile = fileName
-                        break
-                    }
-                }
-            }
-        }
 
-        if (foundToken != null || foundKey != null) {
-            tvStatus.text = "Ключи найдены!"
-            tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
-            tvToken.text = foundToken ?: "Не найден"
-            tvFinalKey.text = foundKey ?: "Не найден"
-        } else {
-            tvStatus.text = "TOKEN/FINAL_KEY не найдены"
-            tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_orange_dark))
-            tvToken.text = "Не найден"
-            tvFinalKey.text = "Не найден"
-        }
+            // Декодируем HTML entities (&quot; -> ")
+            val jsonStr = jsonMatch.groupValues[1].replace("&quot;", "\"")
+            val json = JSONObject(jsonStr)
 
-        // Показываем ВСЕ файлы и их содержимое
-        val sb = StringBuilder()
-        for ((fileName, content) in files) {
-            sb.appendLine("=== $fileName ===")
-            // Только строки с name= (ключевые пары)
-            for (line in content.lines()) {
-                val trimmed = line.trim()
-                if (trimmed.contains("name=") && (trimmed.contains("<string") || trimmed.contains("<boolean") || trimmed.contains("<int") || trimmed.contains("<long"))) {
-                    sb.appendLine(trimmed)
-                }
+            val token = json.optString("token", "")
+            val uid = json.optString("uId", "")
+            val serverKey = json.optString("serverKey", "")
+            val safetyToken = json.optString("safetyToken", "")
+
+            // Также ищем NOTIF_TOKEN_KEY
+            val notifMatch = Regex("""<string name="NOTIF_TOKEN_KEY">(.*?)</string>""").find(xml)
+            val notifToken = notifMatch?.groupValues?.get(1) ?: ""
+
+            // Также ищем UNIQUE_ID
+            val uniqueMatch = Regex("""<string name="BASIC_INIT_UNIQUE_ID_KEY">(.*?)</string>""").find(xml)
+            val uniqueId = uniqueMatch?.groupValues?.get(1) ?: ""
+
+            if (token.isNotEmpty()) {
+                tvStatus.text = "Ключи найдены!"
+                tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
+                tvToken.text = token
+                tvFinalKey.text = uid
+            } else {
+                tvStatus.text = "Токен пуст"
+                tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_orange_dark))
+                tvToken.text = "Не найден"
+                tvFinalKey.text = "Не найден"
             }
+
+            // Показываем все найденные данные
+            val sb = StringBuilder()
+            sb.appendLine("Файл: $path")
             sb.appendLine()
+            sb.appendLine("=== ОСНОВНЫЕ КЛЮЧИ ===")
+            sb.appendLine("TOKEN:       $token")
+            sb.appendLine("UID:         $uid")
+            sb.appendLine("Server Key:  $serverKey")
+            sb.appendLine("Safety Tok:  $safetyToken")
+            sb.appendLine("Unique ID:   $uniqueId")
+            sb.appendLine("Notif Token: ${notifToken.take(50)}...")
+            sb.appendLine()
+            sb.appendLine("=== ПОЛНЫЙ JSON ===")
+            sb.appendLine(json.toString(2))
+
+            tvInstructions.text = sb.toString()
+
+        } catch (e: Exception) {
+            tvStatus.text = "Ошибка парсинга"
+            tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_dark))
+            tvInstructions.text = "Ошибка: ${e.message}"
         }
-
-        val text = sb.toString()
-        val truncated = if (text.length > 4000) text.substring(0, 4000) + "\n...ещё" else text
-        tvInstructions.text = truncated
-    }
-
-    private fun extractXmlString(xml: String, name: String): String? {
-        // <string name="KEY">VALUE</string>
-        val r1 = Regex("""<string\s+name="$name">(.*?)</string>""")
-        r1.find(xml)?.let { if (it.groupValues[1].isNotEmpty()) return it.groupValues[1] }
-
-        // <string name="KEY" value="VALUE"/>
-        val r2 = Regex("""<string\s+name="$name"\s+value="(.*?)"/>""")
-        r2.find(xml)?.let { if (it.groupValues[1].isNotEmpty()) return it.groupValues[1] }
-
-        return null
     }
 
     private fun execSu(cmd: String): String {
